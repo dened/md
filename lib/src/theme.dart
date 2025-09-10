@@ -229,6 +229,14 @@ class MarkdownThemeData implements ThemeExtension<MarkdownThemeData> {
             var s when s.contains(MD$Style.link) => linkColor,
             _ => null,
           },
+          fontFamilyFallback: style.contains(MD$Style.monospace)
+              ? [
+                  'Roboto Mono', // Android
+                  'SF Mono', // iOS, macOS
+                  'Consolas', // Windows
+                  'Courier', // Generic fallback
+                ]
+              : null,
           backgroundColor: switch (style) {
             var s when s.contains(MD$Style.highlight) =>
               highlightBackgroundColor,

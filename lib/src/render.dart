@@ -1119,10 +1119,7 @@ class BlockPainter$Code implements BlockPainter {
   }) : painter = TextPainter(
           text: TextSpan(
             text: text,
-            style: theme.textStyle.copyWith(
-              fontFamily: 'monospace',
-              fontSize: theme.textStyle.fontSize ?? kDefaultFontSize,
-            ),
+            style: theme.textStyleFor(MD$Style.monospace)
           ),
           textAlign: TextAlign.start,
           textDirection: theme.textDirection,

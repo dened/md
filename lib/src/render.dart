@@ -1188,6 +1188,35 @@ class BlockPainter$Code implements BlockPainter {
   }
 }
 
+/// Helper function to distribute widths among columns, respecting minimums.
+/// If total minimum width exceeds availableWidth, it returns the minimum widths as-is,
+/// implying that the content will overflow and require scrolling.
+List<double> _distributeWidths(
+    List<double> natural, List<double> min, double availableWidth) {
+  final totalNatural = natural.reduce((a, b) => a + b);
+  final totalMin = min.reduce((a, b) => a + b);
+
+  if (totalNatural <= availableWidth) {
+    return natural;
+  }
+
+  if (totalMin <= availableWidth) {
+    final remainingSpace = availableWidth - totalMin;
+    final extraSpacePerColumn = [
+      for (var i = 0; i < natural.length; i++) natural[i] - min[i]
+    ];
+    final totalExtraSpace = extraSpacePerColumn.reduce((a, b) => a + b);
+
+    if (totalExtraSpace <= 0.001) return min;
+
+    return [
+      for (var i = 0; i < natural.length; i++)
+        min[i] + remainingSpace * (extraSpacePerColumn[i] / totalExtraSpace)
+    ];
+  }
+  return min;
+}
+
 /// A class for painting a table block in markdown.
 @meta.internal
 class BlockPainter$Table implements BlockPainter {
@@ -1203,7 +1232,7 @@ class BlockPainter$Table implements BlockPainter {
         );
 
   /// Padding for the table cells.
-  static const double padding = 4.0;
+  static const double padding = 8.0;
 
   /// The theme for the markdown table.
   final MarkdownThemeData theme;
@@ -1224,6 +1253,9 @@ class BlockPainter$Table implements BlockPainter {
   Size get size => _size;
   Size _size = Size.zero;
 
+  List<double> _columnWidths = const <double>[];
+  List<double> _rowHeights = const <double>[];
+
   @override
   void handleTapDown(PointerDownEvent _) {/* Do nothing */}
 
@@ -1233,82 +1265,161 @@ class BlockPainter$Table implements BlockPainter {
   @override
   Size layout(double width) {
     if (columns < 1) return _size = Size.zero;
-    return _size = Size(
-      width, // The width of the table is the same as the available width.
-      (header.cells.length + rows.length) *
-          ((theme.textStyle.fontSize ?? kDefaultFontSize) + padding * 2),
-    );
+
+    final naturalWidths = List<double>.filled(columns, 0.0);
+    final minWidths = List<double>.filled(columns, 0.0);
+
+    final allRows = [header, ...rows];
+
+    // Calculate natural and min widths for each column
+    for (int c = 0; c < columns; c++) {
+      double colNatural = 0.0;
+      double colMin = 0.0;
+      for (int r = 0; r < allRows.length; r++) {
+        final row = allRows[r];
+        if (c >= row.cells.length) continue;
+        final cell = row.cells[c];
+        final cellText = cell.map((s) => s.text).join();
+        final style = (r == 0)
+            ? theme.textStyle.copyWith(fontWeight: FontWeight.bold)
+            : theme.textStyle;
+
+        // Calculate natural width (unconstrained)
+        painter.text = TextSpan(text: cellText, style: style);
+        painter.layout(maxWidth: double.infinity);
+        colNatural = math.max(colNatural, painter.width);
+
+        // Calculate min width (longest word)
+        final words = cellText.split(RegExp(r'\s+'));
+        double maxWordWidth = 0.0;
+        for (final String word in words) {
+          painter.text = TextSpan(text: word, style: style);
+          painter.layout();
+          maxWordWidth = math.max(maxWordWidth, painter.width);
+        }
+        colMin = math.max(colMin, maxWordWidth);
+      }
+      naturalWidths[c] = colNatural + padding * 2;
+      minWidths[c] = colMin + padding * 2;
+    }
+
+    _columnWidths = _distributeWidths(naturalWidths, minWidths, width);
+    final totalWidth = _columnWidths.reduce((a, b) => a + b);
+
+    // Calculate row heights based on final column widths
+    _rowHeights = List<double>.filled(allRows.length, 0.0);
+    double totalHeight = 0.0;
+    for (int r = 0; r < allRows.length; r++) {
+      final row = allRows[r];
+      double rowHeight = 0.0;
+      for (int c = 0; c < columns; c++) {
+        if (c >= row.cells.length) continue;
+        final cell = row.cells[c];
+        final style = (r == 0)
+            ? theme.textStyle.copyWith(fontWeight: FontWeight.bold)
+            : null;
+
+        painter.text = _paragraphFromMarkdownSpans(
+            spans: cell, theme: theme, textStyle: style);
+        painter.layout(maxWidth: math.max(0.0, _columnWidths[c] - padding * 2));
+        rowHeight = math.max(rowHeight, painter.height);
+      }
+      _rowHeights[r] = rowHeight + padding * 2;
+      totalHeight += _rowHeights[r];
+    }
+
+    return _size = Size(totalWidth, totalHeight);
   }
 
   @override
   void paint(Canvas canvas, Size size, double offset) {
     // If the width is less than required do not paint anything.
-    if (size.width < _size.width || columns < 1) return;
+    if (columns < 1) return;
 
-    // Draw the header row.
-    final columnWidth = size.width / columns;
-    final cellMaxWidth = columnWidth - padding * 2;
-    final rowHeight =
-        (theme.textStyle.fontSize ?? kDefaultFontSize) + padding * 2;
-    canvas.drawRRect(
-      RRect.fromLTRBR(
-        0, // Left
-        offset, // Top
-        size.width, // Right
-        offset + _size.height, // Bottom
-        const Radius.circular(padding), // Radius for rounded corners
-      ),
-      Paint()
-        ..color = theme.surfaceColor ?? const Color.fromARGB(255, 235, 235, 235)
-        ..style = PaintingStyle.fill
-        ..isAntiAlias = false,
-    );
+    double currentY = offset;
+    final allRows = [header, ...rows];
 
-    for (var i = 0; i < columns; i++) {
-      final cell = header.cells[i];
-      painter
-        ..text = TextSpan(
-          text: cell.map((span) => span.text).join(),
-          style: theme.textStyle.copyWith(
-            fontWeight: FontWeight.bold,
-          ),
-        )
-        ..layout(
-          minWidth: 0,
-          maxWidth: cellMaxWidth,
+    for (int r = 0; r < allRows.length; r++) {
+      final row = allRows[r];
+      double currentX = 0;
+
+      // Draw background for even data rows.
+      if (r % 2 == 0 && r != 0) {
+        final rowBackgroundPaint = Paint()
+          ..style = PaintingStyle.fill
+          ..isAntiAlias = false
+          ..color =
+              theme.surfaceColor ?? const Color.fromARGB(255, 235, 235, 235);
+        canvas.drawRect(
+          Rect.fromLTWH(0, currentY, _size.width, _rowHeights[r]),
+          rowBackgroundPaint,
         );
-      painter.paint(
-        canvas,
-        Offset(
-          i * columnWidth + padding,
-          offset + rowHeight - padding - painter.height / 2,
-        ),
-      );
-    }
+      }
 
-    for (var i = 0; i < rows.length; i++) {
-      final row = rows[i];
-      for (var j = 0; j < columns; j++) {
-        if (j >= row.cells.length) continue; // Skip if the cell is missing.
-        final cell = row.cells[j];
-        painter
-          ..text = TextSpan(
-            text: cell.map((span) => span.text).join(),
-            style: theme.textStyle,
-          )
-          ..layout(
-            minWidth: 0,
-            maxWidth: cellMaxWidth,
-          );
+      for (int c = 0; c < columns; c++) {
+        if (c >= row.cells.length) continue;
+        final cell = row.cells[c];
+        final style = (r == 0)
+            ? theme.textStyle.copyWith(
+                fontWeight: FontWeight.bold,
+              )
+            : null;
+        painter.textAlign = (r == 0) ? TextAlign.center : TextAlign.start;
+
+        painter.text = _paragraphFromMarkdownSpans(
+            spans: cell, theme: theme, textStyle: style);
+        painter.layout(maxWidth: math.max(0.0, _columnWidths[c] - padding * 2));
+
+        final verticalPadding = (_rowHeights[r] - painter.height) / 2;
+        final horizontalPadding = (r == 0)
+            ? (_columnWidths[c] - painter.width) / 2 // Центрируем заголовок
+            : padding; // Отступ слева для обычных ячеек
+
         painter.paint(
           canvas,
           Offset(
-            j * columnWidth + padding,
-            offset + rowHeight * (i + 2) - painter.height / 2,
+            currentX + horizontalPadding,
+            currentY + verticalPadding,
           ),
         );
+        currentX += _columnWidths[c];
       }
+      currentY += _rowHeights[r];
     }
+
+    // Draw borders
+    final borderPaint = Paint()
+      ..color = theme.dividerColor ?? const Color(0x1F000000)
+      ..style = PaintingStyle.stroke
+      ..isAntiAlias = false
+      ..strokeWidth = 1.0;
+
+    // Draw horizontal lines
+    double lineY = offset;
+    for (int r = 0; r < allRows.length - 1; r++) {
+      lineY += _rowHeights[r];
+      canvas.drawLine(
+          Offset(0, lineY), Offset(_size.width, lineY), borderPaint);
+    }
+
+    // Draw vertical lines
+    double lineX = 0;
+    for (int c = 0; c < columns - 1; c++) {
+      lineX += _columnWidths[c];
+      canvas.drawLine(Offset(lineX, offset),
+          Offset(lineX, offset + _size.height), borderPaint);
+    }
+
+    // Draw outer borders
+    canvas.drawRect(
+      Rect.fromLTRB(
+        0,
+        offset,
+        _size.width,
+        offset + _size.height,
+      ),
+      borderPaint,
+    );
   }
 
   @override

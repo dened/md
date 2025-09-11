@@ -1189,7 +1189,7 @@ class BlockPainter$Code implements BlockPainter {
 }
 
 /// Helper function to distribute widths among columns, respecting minimums.
-/// If total minimum width exceeds availableWidth, 
+/// If total minimum width exceeds availableWidth,
 /// it returns the minimum widths as-is,
 /// implying that the content will overflow and require scrolling.
 List<double> _distributeWidths(
@@ -1225,12 +1225,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     required this.header,
     required this.rows,
     required this.theme,
-  })  : columns = header.cells.length,
-        painter = TextPainter(
-          textAlign: TextAlign.start,
-          textDirection: theme.textDirection,
-          textScaler: theme.textScaler,
-        );
+  })  : columns = header.cells.length;
 
   /// Padding for the table cells.
   static const double padding = 8.0;
@@ -1238,8 +1233,6 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
   /// The theme for the markdown table.
   final MarkdownThemeData theme;
 
-  /// Text painter for rendering the table content.
-  final TextPainter painter;
 
   /// The number of columns in the table.
   final int columns;
@@ -1255,23 +1248,23 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
   Size get size => _size;
   Size _size = Size.zero;
 
-  List<double> _columnWidths = const <double>[];
-  List<double> _rowHeights = const <double>[];
-
-  /// Last span hit by the tap down event.
+  List<List<TextPainter>> _cellPainters = const [];
+   /// Last span hit by the tap down event.
   TextSpan? _lastSpan;
 
   @override
   void handleTapDown(PointerDownEvent event) {
     _lastSpan = null; // Reset the span on tap down.
-    final span = hitTestInlineSpanWithPointerEvent(event, painter);
-    if (span case TextSpan textSpan) _lastSpan = textSpan;
+    final span = _getSpanForOffset(event.localPosition);
+    if (span != null) {
+      _lastSpan = span;
+    }
   }
 
   @override
   void handleTapUp(PointerUpEvent event) {
     if (_lastSpan == null) return; // No span was hit on tap down.
-    final span = hitTestInlineSpanWithPointerEvent(event, painter);
+    final span = _getSpanForOffset(event.localPosition);
     if (span != null && _lastSpan == span) {
       // If the span is the same as the one hit on tap down,
       // call the tap recognizer.
@@ -1281,154 +1274,143 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     _lastSpan = null; // Clear the span after handling the tap.
   }
 
-  double _calculateCellHeight(
-      List<MD$Span> cell, double width, TextStyle? style) {
-    painter.text = _paragraphFromMarkdownSpans(
-      spans: cell,
-      theme: theme,
-      textStyle: style,
-    );
-    painter.layout(maxWidth: math.max(0.0, width - padding * 2));
-    return painter.height;
-  }
+    TextSpan? _getSpanForOffset(Offset position) {
+    final rowHeights =
+        List.generate(_cellPainters.length, (r) => _getRowHeight(r));
+    final columnWidths = _getColumnWidths();
+    double currentY = 0.0;
 
-  // Helper to calculate total table height for a given width distribution
-  double _calculateTotalHeight(
-      List<double> columnWidths, List<MD$TableRow> allRows) {
-    double totalHeight = 0;
-    for (int r = 0; r < allRows.length; r++) {
-      final row = allRows[r];
-      double rowHeight = 0.0;
-      for (int c = 0; c < columns; c++) {
-        if (c >= row.cells.length) continue;
-        final cell = row.cells[c];
-        final style = (r == 0)
-            ? theme.textStyle.copyWith(fontWeight: FontWeight.bold)
-            : null;
-        rowHeight = math.max(
-            rowHeight, _calculateCellHeight(cell, columnWidths[c], style));
+    for (int r = 0; r < _cellPainters.length; r++) {
+      final rowHeight = rowHeights[r];
+      double currentX = 0.0;
+
+      if (position.dy >= currentY && position.dy < currentY + rowHeight) {
+        // In this row.
+        for (int c = 0; c < _cellPainters[r].length; c++) {
+          final painter = _cellPainters[r][c];
+          if (painter.text == null) {
+            currentX += columnWidths[c];
+            continue;
+          }
+          final columnWidth = columnWidths[c];
+
+          if (position.dx >= currentX && position.dx < currentX + columnWidth) {
+            // In this cell.
+            final verticalPadding = (rowHeight - painter.height) / 2;
+            final horizontalPadding =
+                (r == 0) ? (columnWidth - painter.width) / 2 : padding;
+
+            final painterOffset = Offset(
+                currentX + horizontalPadding, currentY + verticalPadding);
+            final localPosition = position - painterOffset;
+
+            // Check if inside the actual painted text area.
+            if (localPosition.dx < 0 ||
+                localPosition.dx > painter.width ||
+                localPosition.dy < 0 ||
+                localPosition.dy > painter.height) {
+              currentX += columnWidth;
+              continue;
+            }
+
+            final textPosition = painter.getPositionForOffset(localPosition);
+            final span = painter.text!.getSpanForPosition(textPosition);
+            if (span is TextSpan) {
+              return span;
+            }
+            return null; // Found cell, but no span.
+          }
+          currentX += columnWidth;
+        }
       }
-      totalHeight += rowHeight + padding * 2;
+      currentY += rowHeight;
     }
-    return totalHeight;
+    return null;
   }
 
   @override
   Size layout(double width) {
     if (columns < 1) return _size = Size.zero;
 
+    // Dispose old painters
+    for (final row in _cellPainters) {
+      for (final painter in row) {
+        painter.dispose();
+      }
+    }
+
+    final allRows = [header, ...rows];
     final naturalWidths = List<double>.filled(columns, 0.0);
     final minWidths = List<double>.filled(columns, 0.0);
 
-    final allRows = [header, ...rows];
-
-    // Calculate natural and min widths for each column
-    for (int c = 0; c < columns; c++) {
-      double colNatural = 0.0;
-      double colMin = 0.0;
-      for (int r = 0; r < allRows.length; r++) {
-        final row = allRows[r];
-        if (c >= row.cells.length) continue;
-        final cell = row.cells[c];
-        final cellText = cell.map((s) => s.text).join();
-        final style = (r == 0)
-            ? theme.textStyle.copyWith(fontWeight: FontWeight.bold)
-            : theme.textStyle;
-
-        // Calculate natural width (unconstrained)
-        painter.text = _paragraphFromMarkdownSpans(
-          spans: cell,
-          theme: theme,
-          textStyle: style,
-        );
-        painter.layout(maxWidth: double.infinity);
-        colNatural = math.max(colNatural, painter.width);
-
-        // Calculate min width (longest word)
-        final words = cellText.split(RegExp(r'\s+'));
-        double maxWordWidth = 0.0;
-        for (final String word in words) {
-          painter.text =
-              TextSpan(text: word.split('').join('\u200B'), style: style);
-          painter.layout();
-          maxWordWidth = math.max(maxWordWidth, painter.width);
-        }
-        colMin = math.max(colMin, maxWordWidth);
-      }
-      naturalWidths[c] = colNatural + padding * 2;
-      minWidths[c] = colMin + padding * 2;
-    }
-
-    List<double> currentWidths =
-        _distributeWidths(naturalWidths, minWidths, width);
-
-    // Iteratively adjust widths to balance row heights
-    for (int i = 0; i < 5; i++) {
-      // Limit iterations to prevent infinite loops
-      double currentTotalHeight = _calculateTotalHeight(currentWidths, allRows);
-      bool changed = false;
-
-      // Find widest and narrowest columns
-      int widestIndex = -1, narrowestIndex = -1;
-      double maxW = -1, minW = double.infinity;
-      for (int c = 0; c < columns; c++) {
-        if (currentWidths[c] > maxW) {
-          maxW = currentWidths[c];
-          widestIndex = c;
-        }
-        if (currentWidths[c] < minW) {
-          minW = currentWidths[c];
-          narrowestIndex = c;
-        }
-      }
-
-      if (widestIndex == -1 ||
-          narrowestIndex == -1 ||
-          widestIndex == narrowestIndex) break;
-
-      // Try to move some width from the widest to the narrowest
-      final double delta =
-          (currentWidths[widestIndex] - minWidths[widestIndex]) * 0.1;
-      if (delta < 1.0) break;
-
-      final List<double> nextWidths = List.from(currentWidths);
-      nextWidths[widestIndex] -= delta;
-      nextWidths[narrowestIndex] += delta;
-
-      double nextTotalHeight = _calculateTotalHeight(nextWidths, allRows);
-
-      if (nextTotalHeight < currentTotalHeight) {
-        currentWidths = nextWidths;
-        changed = true;
-      }
-      if (!changed) break;
-    }
-    _columnWidths = currentWidths;
-    final totalWidth = _columnWidths.reduce((a, b) => a + b);
-
-    // Calculate row heights based on final column widths
-    _rowHeights = List<double>.filled(allRows.length, 0.0);
-    double totalHeight = 0.0;
-    for (int r = 0; r < allRows.length; r++) {
+    // Create painters and calculate natural/min widths
+    _cellPainters = List.generate(allRows.length, (r) {
       final row = allRows[r];
-      double rowHeight = 0.0;
-      for (int c = 0; c < columns; c++) {
-        if (c >= row.cells.length) continue;
+      return List.generate(columns, (c) {
+        if (c >= row.cells.length) {
+          return TextPainter(textDirection: theme.textDirection);
+        }
         final cell = row.cells[c];
         final style = (r == 0)
             ? theme.textStyle.copyWith(fontWeight: FontWeight.bold)
             : null;
+        final textPainter = TextPainter(
+          text: _paragraphFromMarkdownSpans(
+              spans: cell, theme: theme, textStyle: style),
+          textAlign: (r == 0) ? TextAlign.center : TextAlign.start,
+          textDirection: theme.textDirection,
+          textScaler: theme.textScaler,
+        );
 
-        painter.text = _paragraphFromMarkdownSpans(
-            spans: cell, theme: theme, textStyle: style);
-        painter.layout(maxWidth: math.max(0.0, _columnWidths[c] - padding * 2));
-        rowHeight = math.max(rowHeight, painter.height);
+        // Calculate natural width
+        textPainter.layout(maxWidth: double.infinity);
+        naturalWidths[c] =
+            math.max(naturalWidths[c], textPainter.width + padding * 2);
+
+        // Calculate min width (longest word)
+        final cellText = cell.map((s) => s.text).join();
+        final words = cellText.split(RegExp(r'\s+'));
+        if (words.isNotEmpty) {
+          final longestWord =
+              words.reduce((a, b) => a.length > b.length ? a : b);
+          final wordPainter = TextPainter(
+            text: TextSpan(
+                text: longestWord.split('').join('\u200B'), style: style),
+            textDirection: theme.textDirection,
+          )..layout();
+          minWidths[c] =
+              math.max(minWidths[c], wordPainter.width + padding * 2);
+          wordPainter.dispose();
+        }
+        return textPainter;
+      });
+    });
+
+    final columnWidths = _distributeWidths(naturalWidths, minWidths, width);
+    final totalWidth = columnWidths.reduce((a, b) => a + b);
+
+    // Layout painters with final widths and calculate row heights
+    final rowHeights = List<double>.filled(allRows.length, 0.0);
+    double totalHeight = 0.0;
+    for (int r = 0; r < allRows.length; r++) {
+      double rowHeight = 0.0;
+      for (int c = 0; c < columns; c++) {
+
+        final painter = _cellPainters[r][c];
+        if (painter.text == null) continue;
+        painter.layout(maxWidth: math.max(0.0, columnWidths[c] - padding * 2));
+        rowHeight = math.max(
+          rowHeight,
+
+          painter.height,
+        );
       }
-      _rowHeights[r] = rowHeight + padding * 2;
-      totalHeight += _rowHeights[r];
-    }
 
-    return _size = Size(totalWidth, totalHeight);
+
+      rowHeights[r] = rowHeight + padding * 2;
+      totalHeight += rowHeights[r];
+    }
+       return _size = Size(totalWidth, totalHeight);
   }
 
   @override
@@ -1437,10 +1419,11 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     if (columns < 1) return;
 
     double currentY = offset;
-    final allRows = [header, ...rows];
+    final rowHeights =
+        List.generate(_cellPainters.length, (r) => _getRowHeight(r));
+    final columnWidths = _getColumnWidths();
 
-    for (int r = 0; r < allRows.length; r++) {
-      final row = allRows[r];
+    for (int r = 0; r < _cellPainters.length; r++) {
       double currentX = 0;
 
       // Draw background for even data rows.
@@ -1451,29 +1434,22 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
           ..color =
               theme.surfaceColor ?? const Color.fromARGB(255, 235, 235, 235);
         canvas.drawRect(
-          Rect.fromLTWH(0, currentY, _size.width, _rowHeights[r]),
+          Rect.fromLTWH(0, currentY, _size.width, rowHeights[r]),
           rowBackgroundPaint,
         );
       }
 
       for (int c = 0; c < columns; c++) {
-        if (c >= row.cells.length) continue;
-        final cell = row.cells[c];
-        final style = (r == 0)
-            ? theme.textStyle.copyWith(
-                fontWeight: FontWeight.bold,
-              )
-            : null;
-        painter.textAlign = (r == 0) ? TextAlign.center : TextAlign.start;
+        final painter = _cellPainters[r][c];
+        if (painter.text == null) {
+          currentX += _cellPainters[r].length > c ? columnWidths[c] : 0;
+          continue;
+        }
 
-        painter.text = _paragraphFromMarkdownSpans(
-            spans: cell, theme: theme, textStyle: style);
-        painter.layout(maxWidth: math.max(0.0, _columnWidths[c] - padding * 2));
-
-        final verticalPadding = (_rowHeights[r] - painter.height) / 2;
+        final verticalPadding = (rowHeights[r] - painter.height) / 2;
         final horizontalPadding = (r == 0)
-            ? (_columnWidths[c] - painter.width) / 2 // Центрируем заголовок
-            : padding; // Отступ слева для обычных ячеек
+            ? (columnWidths[c] - painter.width) / 2 // Center for header rows
+            : padding; // Left align for data rows
 
         painter.paint(
           canvas,
@@ -1482,9 +1458,9 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
             currentY + verticalPadding,
           ),
         );
-        currentX += _columnWidths[c];
+        currentX += columnWidths[c];
       }
-      currentY += _rowHeights[r];
+      currentY += rowHeights[r];
     }
 
     // Border Paint
@@ -1495,13 +1471,14 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
       ..strokeWidth = 1.0;
 
     // Draw inner borders
-    final points = Float32List(((allRows.length - 1) + (columns - 1)) * 4);
+    final points =
+        Float32List(((_cellPainters.length - 1) + (columns - 1)) * 4);
     var pointIndex = 0;
 
     // Horizontal lines
     double lineY = offset;
-    for (int r = 0; r < allRows.length - 1; r++) {
-      lineY += _rowHeights[r];
+    for (int r = 0; r < _cellPainters.length - 1; r++) {
+      lineY += rowHeights[r];
       points[pointIndex++] = 0;
       points[pointIndex++] = lineY;
       points[pointIndex++] = _size.width;
@@ -1511,7 +1488,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     // Vertical lines
     double lineX = 0;
     for (int c = 0; c < columns - 1; c++) {
-      lineX += _columnWidths[c];
+      lineX += columnWidths[c];
       points[pointIndex++] = lineX;
       points[pointIndex++] = offset;
       points[pointIndex++] = lineX;
@@ -1533,6 +1510,25 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
 
   @override
   void dispose() {
-    painter.dispose();
+    for (final row in _cellPainters) {
+      for (final painter in row) {
+        painter.dispose();
+      }
+    }
+    _cellPainters = const [];
+  }
+
+  List<double> _getColumnWidths() {
+    return List.generate(columns, (c) {
+      double maxW = 0;
+      for (int r = 0; r < _cellPainters.length; r++) {
+        maxW = math.max(maxW, _cellPainters[r][c].width);
+      }
+      return maxW + padding * 2;
+    });
+  }
+
+  double _getRowHeight(int r) {
+    return _cellPainters[r].map((p) => p.height).reduce(math.max) + padding * 2;
   }
 }

@@ -1188,36 +1188,6 @@ class BlockPainter$Code implements BlockPainter {
   }
 }
 
-/// Helper function to distribute widths among columns, respecting minimums.
-/// If total minimum width exceeds availableWidth,
-/// it returns the minimum widths as-is,
-/// implying that the content will overflow and require scrolling.
-List<double> _distributeWidths(
-    List<double> natural, List<double> min, double availableWidth) {
-  final totalNatural = natural.reduce((a, b) => a + b);
-  final totalMin = min.reduce((a, b) => a + b);
-
-  if (totalNatural <= availableWidth) {
-    return natural;
-  }
-
-  if (totalMin <= availableWidth) {
-    final remainingSpace = availableWidth - totalMin;
-    final extraSpacePerColumn = [
-      for (var i = 0; i < natural.length; i++) natural[i] - min[i]
-    ];
-    final totalExtraSpace = extraSpacePerColumn.reduce((a, b) => a + b);
-
-    if (totalExtraSpace <= 0.001) return min;
-
-    return [
-      for (var i = 0; i < natural.length; i++)
-        min[i] + remainingSpace * (extraSpacePerColumn[i] / totalExtraSpace)
-    ];
-  }
-  return min;
-}
-
 /// A class for painting a table block in markdown.
 @meta.internal
 class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
@@ -1225,14 +1195,13 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     required this.header,
     required this.rows,
     required this.theme,
-  })  : columns = header.cells.length;
+  }) : columns = header.cells.length;
 
   /// Padding for the table cells.
   static const double padding = 8.0;
 
   /// The theme for the markdown table.
   final MarkdownThemeData theme;
-
 
   /// The number of columns in the table.
   final int columns;
@@ -1244,12 +1213,12 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
   final List<MD$TableRow> rows;
 
   @override
-  // ignore: long-method
   Size get size => _size;
   Size _size = Size.zero;
 
   List<List<TextPainter>> _cellPainters = const [];
-   /// Last span hit by the tap down event.
+
+  /// Last span hit by the tap down event.
   TextSpan? _lastSpan;
 
   @override
@@ -1274,7 +1243,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     _lastSpan = null; // Clear the span after handling the tap.
   }
 
-    TextSpan? _getSpanForOffset(Offset position) {
+  TextSpan? _getSpanForOffset(Offset position) {
     final rowHeights =
         List.generate(_cellPainters.length, (r) => _getRowHeight(r));
     final columnWidths = _getColumnWidths();
@@ -1343,6 +1312,38 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     final naturalWidths = List<double>.filled(columns, 0.0);
     final minWidths = List<double>.filled(columns, 0.0);
 
+    final textPainter = TextPainter(
+      text: TextSpan(text: '', style: theme.textStyle),
+      textAlign: TextAlign.start,
+      textDirection: theme.textDirection,
+      textScaler: theme.textScaler,
+    );
+
+    for (int c = 0; c < columns; c++) {
+      final maxLenghtTextInColumn =
+          rows.map((it) => it.cells[c].map((span) => span.text).join()).reduce(
+                (max, element) => max.length > element.length ? max : element,
+              );
+
+      final maxWordInColumn = rows
+          .map((it) => it.cells[c]
+              .map((span) => span.text
+                  .split((RegExp(r'\s+')))
+                  .reduce((a, b) => a.length > b.length ? a : b))
+              .reduce((a, b) => a.length > b.length ? a : b))
+          .reduce((a, b) => a.length > b.length ? a : b);
+
+      textPainter.text = TextSpan(text: maxLenghtTextInColumn);
+      textPainter.layout(maxWidth: double.infinity);
+      naturalWidths[c] = textPainter.width + padding * 2;
+
+      textPainter.text = TextSpan(text: maxWordInColumn);
+      textPainter.layout(maxWidth: double.infinity);
+      minWidths[c] = textPainter.width + padding * 2;
+    }
+
+    textPainter.dispose();
+
     // Create painters and calculate natural/min widths
     _cellPainters = List.generate(allRows.length, (r) {
       final row = allRows[r];
@@ -1362,26 +1363,6 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
           textScaler: theme.textScaler,
         );
 
-        // Calculate natural width
-        textPainter.layout(maxWidth: double.infinity);
-        naturalWidths[c] =
-            math.max(naturalWidths[c], textPainter.width + padding * 2);
-
-        // Calculate min width (longest word)
-        final cellText = cell.map((s) => s.text).join();
-        final words = cellText.split(RegExp(r'\s+'));
-        if (words.isNotEmpty) {
-          final longestWord =
-              words.reduce((a, b) => a.length > b.length ? a : b);
-          final wordPainter = TextPainter(
-            text: TextSpan(
-                text: longestWord.split('').join('\u200B'), style: style),
-            textDirection: theme.textDirection,
-          )..layout();
-          minWidths[c] =
-              math.max(minWidths[c], wordPainter.width + padding * 2);
-          wordPainter.dispose();
-        }
         return textPainter;
       });
     });
@@ -1395,22 +1376,19 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     for (int r = 0; r < allRows.length; r++) {
       double rowHeight = 0.0;
       for (int c = 0; c < columns; c++) {
-
         final painter = _cellPainters[r][c];
         if (painter.text == null) continue;
         painter.layout(maxWidth: math.max(0.0, columnWidths[c] - padding * 2));
         rowHeight = math.max(
           rowHeight,
-
           painter.height,
         );
       }
 
-
       rowHeights[r] = rowHeight + padding * 2;
       totalHeight += rowHeights[r];
     }
-       return _size = Size(totalWidth, totalHeight);
+    return _size = Size(totalWidth, totalHeight);
   }
 
   @override
@@ -1530,5 +1508,35 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
 
   double _getRowHeight(int r) {
     return _cellPainters[r].map((p) => p.height).reduce(math.max) + padding * 2;
+  }
+
+  /// Helper function to distribute widths among columns, respecting minimums.
+  /// If total minimum width exceeds availableWidth,
+  /// it returns the minimum widths as-is,
+  /// implying that the content will overflow and require scrolling.
+  List<double> _distributeWidths(
+      List<double> natural, List<double> min, double availableWidth) {
+    final totalNatural = natural.reduce((a, b) => a + b);
+    final totalMin = min.reduce((a, b) => a + b);
+
+    if (totalNatural <= availableWidth) {
+      return natural;
+    }
+
+    if (totalMin <= availableWidth) {
+      final remainingSpace = availableWidth - totalMin;
+      final extraSpacePerColumn = [
+        for (var i = 0; i < natural.length; i++) natural[i] - min[i]
+      ];
+      final totalExtraSpace = extraSpacePerColumn.reduce((a, b) => a + b);
+
+      if (totalExtraSpace <= 0.001) return min;
+
+      return [
+        for (var i = 0; i < natural.length; i++)
+          min[i] + remainingSpace * (extraSpacePerColumn[i] / totalExtraSpace)
+      ];
+    }
+    return min;
   }
 }

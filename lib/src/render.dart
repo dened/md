@@ -1195,9 +1195,21 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     required this.header,
     required this.rows,
     required this.theme,
-  }) : columns = header.cells.length;
+  })  : columns = header.cells.length,
+        _columnWidths = List<double>.filled(header.cells.length, 0.0),
+        _rowHeights = List<double>.filled(rows.length + 1, 0.0),
+        _borderPaint = Paint()
+          ..color = theme.dividerColor ?? const Color(0x1F000000)
+          ..style = PaintingStyle.stroke
+          ..isAntiAlias = false
+          ..strokeWidth = 1.0,
+        _rowBackgroundPaint = Paint()
+          ..style = PaintingStyle.fill
+          ..isAntiAlias = false
+          ..color =
+              theme.surfaceColor ?? const Color.fromARGB(255, 235, 235, 235);
 
-  /// Padding for the table cells.
+  /// Padding for table cells.
   static const double padding = 8.0;
 
   /// The theme for the markdown table.
@@ -1205,6 +1217,13 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
 
   /// The number of columns in the table.
   final int columns;
+
+  final List<double> _columnWidths;
+  final List<double> _rowHeights;
+  final Paint _borderPaint;
+  final Paint _rowBackgroundPaint;
+
+  Float32List? _borderPoints;
 
   /// The header row of the table.
   final MD$TableRow header;
@@ -1245,8 +1264,8 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
 
   TextSpan? _getSpanForOffset(Offset position) {
     final rowHeights =
-        List.generate(_cellPainters.length, (r) => _getRowHeight(r));
-    final columnWidths = _getColumnWidths();
+        List.generate(_cellPainters.length, (r) => _rowHeights[r]);
+
     double currentY = 0.0;
 
     for (int r = 0; r < _cellPainters.length; r++) {
@@ -1258,10 +1277,10 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
         for (int c = 0; c < _cellPainters[r].length; c++) {
           final painter = _cellPainters[r][c];
           if (painter.text == null) {
-            currentX += columnWidths[c];
+            currentX += _columnWidths[c];
             continue;
           }
-          final columnWidth = columnWidths[c];
+          final columnWidth = _columnWidths[c];
 
           if (position.dx >= currentX && position.dx < currentX + columnWidth) {
             // In this cell.
@@ -1312,39 +1331,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
     final naturalWidths = List<double>.filled(columns, 0.0);
     final minWidths = List<double>.filled(columns, 0.0);
 
-    final textPainter = TextPainter(
-      text: TextSpan(text: '', style: theme.textStyle),
-      textAlign: TextAlign.start,
-      textDirection: theme.textDirection,
-      textScaler: theme.textScaler,
-    );
-
-    for (int c = 0; c < columns; c++) {
-      final maxLenghtTextInColumn =
-          rows.map((it) => it.cells[c].map((span) => span.text).join()).reduce(
-                (max, element) => max.length > element.length ? max : element,
-              );
-
-      final maxWordInColumn = rows
-          .map((it) => it.cells[c]
-              .map((span) => span.text
-                  .split((RegExp(r'\s+')))
-                  .reduce((a, b) => a.length > b.length ? a : b))
-              .reduce((a, b) => a.length > b.length ? a : b))
-          .reduce((a, b) => a.length > b.length ? a : b);
-
-      textPainter.text = TextSpan(text: maxLenghtTextInColumn);
-      textPainter.layout(maxWidth: double.infinity);
-      naturalWidths[c] = textPainter.width + padding * 2;
-
-      textPainter.text = TextSpan(text: maxWordInColumn);
-      textPainter.layout(maxWidth: double.infinity);
-      minWidths[c] = textPainter.width + padding * 2;
-    }
-
-    textPainter.dispose();
-
-    // Create painters and calculate natural/min widths
+    // Create painters for each row and column
     _cellPainters = List.generate(allRows.length, (r) {
       final row = allRows[r];
       return List.generate(columns, (c) {
@@ -1363,31 +1350,76 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
           textScaler: theme.textScaler,
         );
 
+        // Calculate natural width
+        textPainter.layout(maxWidth: double.infinity);
+        naturalWidths[c] =
+            math.max(naturalWidths[c], textPainter.width + padding * 2);
+
+        // Calculate min width (longest word)
+        final cellText = cell.map((s) => s.text).join();
+        final words = cellText.split(RegExp(r'\s+'));
+        if (words.isNotEmpty) {
+          final longestWord =
+              words.reduce((a, b) => a.length > b.length ? a : b);
+          final wordPainter = TextPainter(
+            text: TextSpan(text: longestWord, style: style),
+            textDirection: theme.textDirection,
+          )..layout();
+          minWidths[c] =
+              math.max(minWidths[c], wordPainter.width + padding * 2);
+          wordPainter.dispose();
+        }
+
         return textPainter;
       });
     });
 
-    final columnWidths = _distributeWidths(naturalWidths, minWidths, width);
-    final totalWidth = columnWidths.reduce((a, b) => a + b);
+    _columnWidths.setAll(0, _distributeWidths(naturalWidths, minWidths, width));
+
+    final totalWidth = _columnWidths.reduce((a, b) => a + b);
 
     // Layout painters with final widths and calculate row heights
-    final rowHeights = List<double>.filled(allRows.length, 0.0);
+
     double totalHeight = 0.0;
     for (int r = 0; r < allRows.length; r++) {
       double rowHeight = 0.0;
       for (int c = 0; c < columns; c++) {
         final painter = _cellPainters[r][c];
         if (painter.text == null) continue;
-        painter.layout(maxWidth: math.max(0.0, columnWidths[c] - padding * 2));
+        painter.layout(maxWidth: math.max(0.0, _columnWidths[c] - padding * 2));
         rowHeight = math.max(
           rowHeight,
           painter.height,
         );
       }
 
-      rowHeights[r] = rowHeight + padding * 2;
-      totalHeight += rowHeights[r];
+      _rowHeights[r] = rowHeight + padding * 2;
+      totalHeight += _rowHeights[r];
     }
+
+    // Cache border points
+    final points = Float32List(((allRows.length - 1) + (columns - 1)) * 4);
+    var pointIndex = 0;
+    // Horizontal lines
+    double lineY = 0;
+    for (int r = 0; r < allRows.length - 1; r++) {
+      lineY += _rowHeights[r];
+      points[pointIndex++] = 0;
+      points[pointIndex++] = lineY;
+      points[pointIndex++] = totalWidth;
+      points[pointIndex++] = lineY;
+    }
+    // Vertical lines
+    double lineX = 0;
+    for (int c = 0; c < columns - 1; c++) {
+      lineX += _columnWidths[c];
+      points[pointIndex++] = lineX;
+      points[pointIndex++] = 0;
+      points[pointIndex++] = lineX;
+      points[pointIndex++] = totalHeight;
+    }
+    _borderPoints = points;
+
     return _size = Size(totalWidth, totalHeight);
   }
 
@@ -1398,35 +1430,29 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
 
     double currentY = offset;
     final rowHeights =
-        List.generate(_cellPainters.length, (r) => _getRowHeight(r));
-    final columnWidths = _getColumnWidths();
+        List.generate(_cellPainters.length, (r) => _rowHeights[r]);
 
     for (int r = 0; r < _cellPainters.length; r++) {
       double currentX = 0;
 
       // Draw background for even data rows.
       if (r % 2 == 0 && r != 0) {
-        final rowBackgroundPaint = Paint()
-          ..style = PaintingStyle.fill
-          ..isAntiAlias = false
-          ..color =
-              theme.surfaceColor ?? const Color.fromARGB(255, 235, 235, 235);
         canvas.drawRect(
           Rect.fromLTWH(0, currentY, _size.width, rowHeights[r]),
-          rowBackgroundPaint,
+          _rowBackgroundPaint,
         );
       }
 
       for (int c = 0; c < columns; c++) {
         final painter = _cellPainters[r][c];
         if (painter.text == null) {
-          currentX += _cellPainters[r].length > c ? columnWidths[c] : 0;
+          currentX += _cellPainters[r].length > c ? _columnWidths[c] : 0;
           continue;
         }
 
         final verticalPadding = (rowHeights[r] - painter.height) / 2;
         final horizontalPadding = (r == 0)
-            ? (columnWidths[c] - painter.width) / 2 // Center for header rows
+            ? (_columnWidths[c] - painter.width) / 2 // Center for header rows
             : padding; // Left align for data rows
 
         painter.paint(
@@ -1436,43 +1462,18 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
             currentY + verticalPadding,
           ),
         );
-        currentX += columnWidths[c];
+        currentX += _columnWidths[c];
       }
       currentY += rowHeights[r];
     }
 
-    // Border Paint
-    final borderPaint = Paint()
-      ..color = theme.dividerColor ?? const Color(0x1F000000)
-      ..style = PaintingStyle.stroke
-      ..isAntiAlias = false
-      ..strokeWidth = 1.0;
-
     // Draw inner borders
-    final points =
-        Float32List(((_cellPainters.length - 1) + (columns - 1)) * 4);
-    var pointIndex = 0;
-
-    // Horizontal lines
-    double lineY = offset;
-    for (int r = 0; r < _cellPainters.length - 1; r++) {
-      lineY += rowHeights[r];
-      points[pointIndex++] = 0;
-      points[pointIndex++] = lineY;
-      points[pointIndex++] = _size.width;
-      points[pointIndex++] = lineY;
+    if (_borderPoints != null) {
+      canvas.save();
+      canvas.translate(0, offset);
+      canvas.drawRawPoints(PointMode.lines, _borderPoints!, _borderPaint);
+      canvas.restore();
     }
-
-    // Vertical lines
-    double lineX = 0;
-    for (int c = 0; c < columns - 1; c++) {
-      lineX += columnWidths[c];
-      points[pointIndex++] = lineX;
-      points[pointIndex++] = offset;
-      points[pointIndex++] = lineX;
-      points[pointIndex++] = offset + _size.height;
-    }
-    canvas.drawRawPoints(PointMode.lines, points, borderPaint);
 
     // Draw outer borders
     canvas.drawRect(
@@ -1482,7 +1483,7 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
         _size.width,
         offset + _size.height,
       ),
-      borderPaint,
+      _borderPaint,
     );
   }
 
@@ -1494,20 +1495,6 @@ class BlockPainter$Table with ParagraphGestureHandler implements BlockPainter {
       }
     }
     _cellPainters = const [];
-  }
-
-  List<double> _getColumnWidths() {
-    return List.generate(columns, (c) {
-      double maxW = 0;
-      for (int r = 0; r < _cellPainters.length; r++) {
-        maxW = math.max(maxW, _cellPainters[r][c].width);
-      }
-      return maxW + padding * 2;
-    });
-  }
-
-  double _getRowHeight(int r) {
-    return _cellPainters[r].map((p) => p.height).reduce(math.max) + padding * 2;
   }
 
   /// Helper function to distribute widths among columns, respecting minimums.

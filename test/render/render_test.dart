@@ -5,65 +5,103 @@ import 'package:flutter_md/flutter_md.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  // Платформа, на которой запускается тест.
-  // Используется для создания специфичных для платформы golden-файлов,
-  // так как рендеринг может незначительно отличаться.
   final platform = Platform.operatingSystem;
 
-  // Golden-тест для MarkdownRenderObject
-  testWidgets('MarkdownWidget golden test', (WidgetTester tester) async {
-    const markdownSource = r'''
-# Markdown Render Object Test
-
-This is a paragraph with **bold** and *italic* text.
-
----
-
-## Lists
-
+  final markdownSources = <String, String>{
+    'unordered_list': r'''
 ### Unordered List
 - First item
 - Second item
   - Sub-item
-
+''',
+    'ordered_list': r'''
 ### Ordered List
 1. Step 1
 2. Step 2
    1. Sub-step 1
-
+''',
+    'blockquote': r'''
+### Blockquote
 > This is a blockquote.
+''',
+    'table': r'''
+### Table
+| Header 1 | Header 2 |
+|----------|----------|
+| Cell 1   | Cell 2   |
+| Cell 3   | Cell 4   |
+''',
+    'horizontal_rule': r'''
+### Horizontal Rule
+---
+''',
+    'headings': r'''
+#Header
+# This is a Heading h1
+## This is a Heading h2
+### This is a Heading h3
+#### This is a Heading h4
+##### This is a Heading h5
+###### This is a Heading h6
+''',
+    'emphasis': r'''
+## Emphasis
 
-```dart
-void main() {
-  print('Hello, Golden Test!');
-}
-```
-''';
+*This text will be italic*
+_This will also be italic_
 
-    // Важно обернуть виджет в MaterialApp и Scaffold,
-    // чтобы обеспечить консистентную тему и окружение для рендеринга.
-    await tester.pumpWidget(
-      MaterialApp(
-        debugShowCheckedModeBanner: false,
-        // Теперь можно просто использовать ThemeData.light() или любую другую тему.
-        // Шрифт 'GoldenBrics' будет применен автоматически благодаря
-        // настройкам в flutter_test_config.dart.
-        theme: ThemeData.light(),
-        home: Scaffold(
-          body: Center(
-            child: MarkdownWidget(
-              markdown: Markdown.fromString(markdownSource),
+**This text will be bold**
+
+__This will be underline__
+
+`This is inline code`
+
+~~This text will be strikethrough~~
+
+==This text will be highlighted==
+
+_`You` **can** __combine__ ~~them~~_
+''',
+    'links': r'''
+## Links
+
+You may be using [Markdown Live Preview](https://markdownlivepreview.com/).
+'''
+  };
+
+  final themes = <String, ThemeData>{
+    'light': ThemeData.light(),
+    'dark': ThemeData.dark(),
+  };
+
+  group('MarkdownWidget golden tests', () {
+    void runGoldenTest(String name, String markdown) {
+      themes.forEach((themeName, themeData) {
+        testWidgets('$name - $themeName', (WidgetTester tester) async {
+          await tester.pumpWidget(
+            MaterialApp(
+              debugShowCheckedModeBanner: false,
+              theme: themeData,
+              home: Scaffold(
+                body: Center(
+                  child: MarkdownWidget(
+                    markdown: Markdown.fromString(markdown),
+                  ),
+                ),
+              ),
             ),
-          ),
-        ),
-      ),
-    );
+          );
 
-    // expectLater с matchesGoldenFile сравнивает отрендеренный виджет
-    // с эталонным изображением (golden file).
-    await expectLater(
-      find.byType(MarkdownWidget),
-      matchesGoldenFile('goldens/$platform/markdown_render_object.png'),
-    );
+          await expectLater(
+            find.byType(MarkdownWidget),
+            matchesGoldenFile('goldens/$platform/${name}_$themeName.png'),
+          );
+        });
+      });
+    }
+
+    markdownSources.forEach((name, markdown) {
+      runGoldenTest(name, markdown);
+    });
   });
 }

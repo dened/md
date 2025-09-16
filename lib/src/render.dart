@@ -57,6 +57,30 @@ class MarkdownRenderObject extends RenderBox {
   }
 
   @override
+  double computeMinIntrinsicWidth(double height) {
+    assert(_debugThrowIfNotCheckingIntrinsics());
+    return 0.0;
+  }
+
+  @override
+  double computeMaxIntrinsicWidth(double height) {
+    assert(_debugThrowIfNotCheckingIntrinsics());
+    return 0.0;
+  }
+
+  @override
+  double computeMinIntrinsicHeight(double width) {
+    assert(_debugThrowIfNotCheckingIntrinsics());
+    return 0.0;
+  }
+
+  @override
+  double computeMaxIntrinsicHeight(double width) {
+    assert(_debugThrowIfNotCheckingIntrinsics());
+    return 0.0;
+  }
+
+  @override
   Size computeDryLayout(BoxConstraints constraints) =>
       constraints.constrain(_painter.layout(maxWidth: constraints.maxWidth));
 
@@ -149,6 +173,21 @@ class MarkdownRenderObject extends RenderBox {
     _painter.paint(canvas, size);
 
     canvas.restore();
+  }
+
+  bool _debugThrowIfNotCheckingIntrinsics() {
+    assert(() {
+      if (!RenderObject.debugCheckingIntrinsics) {
+        throw FlutterError(
+          'LayoutBuilder does not support returning intrinsic dimensions.\n'
+          'Calculating the intrinsic dimensions would require running the layout '
+          'callback speculatively, which might mutate the live render object tree.',
+        );
+      }
+      return true;
+    }());
+
+    return true;
   }
 }
 
